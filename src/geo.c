@@ -145,7 +145,7 @@ double extractUnitOrReply(client *c, robj *unit) {
 /* Input Argument Helper.
  * Extract the dinstance from the specified two arguments starting at 'argv'
  * that shouldbe in the form: <number> <unit> and return the dinstance in the
- * specified unit on success. *conversino is populated with the coefficient
+ * specified unit on success. *conversions is populated with the coefficient
  * to use in order to convert meters to the unit.
  *
  * On error a value less than zero is returned. */
@@ -635,7 +635,7 @@ void georadiusGeneric(client *c, int flags) {
         robj *zobj;
         zset *zs;
         int i;
-        size_t maxelelen = 0;
+        size_t maxelelen = 0, totelelen = 0;
 
         if (returned_items) {
             zobj = createZsetObject();
@@ -650,16 +650,17 @@ void georadiusGeneric(client *c, int flags) {
             size_t elelen = sdslen(gp->member);
 
             if (maxelelen < elelen) maxelelen = elelen;
+            totelelen += elelen;
             znode = zslInsert(zs->zsl,score,gp->member);
             serverAssert(dictAdd(zs->dict,gp->member,&znode->score) == DICT_OK);
             gp->member = NULL;
         }
 
         if (returned_items) {
-            zsetConvertToZiplistIfNeeded(zobj,maxelelen);
+            zsetConvertToZiplistIfNeeded(zobj,maxelelen,totelelen);
             setKey(c->db,storekey,zobj);
             decrRefCount(zobj);
-            notifyKeyspaceEvent(NOTIFY_LIST,"georadiusstore",storekey,
+            notifyKeyspaceEvent(NOTIFY_ZSET,"georadiusstore",storekey,
                                 c->db->id);
             server.dirty += returned_items;
         } else if (dbDelete(c->db,storekey)) {

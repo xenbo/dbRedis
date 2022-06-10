@@ -66,7 +66,10 @@ int setTypeAdd(robj *subject, sds value) {
             if (success) {
                 /* Convert to regular set when the intset contains
                  * too many entries. */
-                if (intsetLen(subject->ptr) > server.set_max_intset_entries)
+                size_t max_entries = server.set_max_intset_entries;
+                /* limit to 1G entries due to intset internals. */
+                if (max_entries >= 1<<30) max_entries = 1<<30;
+                if (intsetLen(subject->ptr) > max_entries)
                     setTypeConvert(subject,OBJ_ENCODING_HT);
                 return 1;
             }
@@ -407,7 +410,7 @@ void spopWithCountCommand(client *c) {
     /* Get the count argument */
     if (getLongFromObjectOrReply(c,c->argv[2],&l,NULL) != C_OK) return;
     if (l >= 0) {
-        count = (unsigned) l;
+        count = (unsigned long) l;
     } else {
         addReply(c,shared.outofrangeerr);
         return;
@@ -516,11 +519,7 @@ void spopWithCountCommand(client *c) {
             sdsfree(sdsele);
         }
 
-        /* Assign the new set as the key value. */
-        incrRefCount(set); /* Protect the old set value. */
-        dbOverwrite(c->db,c->argv[1],newset);
-
-        /* Tranfer the old set to the client and release it. */
+        /* Transfer the old set to the client. */
         setTypeIterator *si;
         si = setTypeInitIterator(set);
         while((encoding = setTypeNext(si,&sdsele,&llele)) != -1) {
@@ -539,7 +538,9 @@ void spopWithCountCommand(client *c) {
             decrRefCount(objele);
         }
         setTypeReleaseIterator(si);
-        decrRefCount(set);
+
+        /* Assign the new set as the key value. */
+        dbOverwrite(c->db,c->argv[1],newset);
     }
 
     /* Don't propagate the command itself even if we incremented the
@@ -626,7 +627,7 @@ void srandmemberWithCountCommand(client *c) {
 
     if (getLongFromObjectOrReply(c,c->argv[2],&l,NULL) != C_OK) return;
     if (l >= 0) {
-        count = (unsigned) l;
+        count = (unsigned long) l;
     } else {
         /* A negative count means: return the same elements multiple times
          * (i.e. don't remove the extracted element after every extraction). */
@@ -774,15 +775,21 @@ void srandmemberCommand(client *c) {
 }
 
 int qsortCompareSetsByCardinality(const void *s1, const void *s2) {
-    return setTypeSize(*(robj**)s1)-setTypeSize(*(robj**)s2);
+    if (setTypeSize(*(robj**)s1) > setTypeSize(*(robj**)s2)) return 1;
+    if (setTypeSize(*(robj**)s1) < setTypeSize(*(robj**)s2)) return -1;
+    return 0;
 }
 
 /* This is used by SDIFF and in this case we can receive NULL that should
  * be handled as empty sets. */
 int qsortCompareSetsByRevCardinality(const void *s1, const void *s2) {
     robj *o1 = *(robj**)s1, *o2 = *(robj**)s2;
+    unsigned long first = o1 ? setTypeSize(o1) : 0;
+    unsigned long second = o2 ? setTypeSize(o2) : 0;
 
-    return  (o2 ? setTypeSize(o2) : 0) - (o1 ? setTypeSize(o1) : 0);
+    if (first < second) return 1;
+    if (first > second) return -1;
+    return 0;
 }
 
 void sinterGenericCommand(client *c, robj **setkeys,

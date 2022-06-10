@@ -27,7 +27,7 @@
  * traversal.
  *
  * <uint16_t zllen> is the number of entries. When there are more than
- * 2^16-2 entires, this value is set to 2^16-1 and we need to traverse the
+ * 2^16-2 entries, this value is set to 2^16-1 and we need to traverse the
  * entire list to know how many items it holds.
  *
  * <uint8_t zlend> is a special entry representing the end of the ziplist.
@@ -53,20 +53,20 @@
  * <prevlen> <encoding>
  *
  * The length of the previous entry, <prevlen>, is encoded in the following way:
- * If this length is smaller than 255 bytes, it will only consume a single
+ * If this length is smaller than 254 bytes, it will only consume a single
  * byte representing the length as an unsinged 8 bit integer. When the length
- * is greater than or equal to 255, it will consume 5 bytes. The first byte is
- * set to 255 (FF) to indicate a larger value is following. The remaining 4
+ * is greater than or equal to 254, it will consume 5 bytes. The first byte is
+ * set to 254 (FE) to indicate a larger value is following. The remaining 4
  * bytes take the length of the previous entry as value.
  *
  * So practically an entry is encoded in the following way:
  *
- * <prevlen from 0 to 254> <encoding> <entry>
+ * <prevlen from 0 to 253> <encoding> <entry>
  *
- * Or alternatively if the previous entry length is greater than 254 bytes
+ * Or alternatively if the previous entry length is greater than 253 bytes
  * the following encoding is used:
  *
- * 0xFF <4 bytes unsigned little endian prevlen> <encoding> <entry>
+ * 0xFE <4 bytes unsigned little endian prevlen> <encoding> <entry>
  *
  * The encoding field of the entry depends on the content of the
  * entry. When the entry is a string, the first 2 bits of the encoding first
@@ -256,20 +256,31 @@
 #define ZIPLIST_ENTRY_END(zl)   ((zl)+intrev32ifbe(ZIPLIST_BYTES(zl))-1)
 
 /* Increment the number of items field in the ziplist header. Note that this
- * macro should never overflow the unsigned 16 bit integer, since entires are
+ * macro should never overflow the unsigned 16 bit integer, since entries are
  * always pushed one at a time. When UINT16_MAX is reached we want the count
  * to stay there to signal that a full scan is needed to get the number of
  * items inside the ziplist. */
 #define ZIPLIST_INCR_LENGTH(zl,incr) { \
-    if (ZIPLIST_LENGTH(zl) < UINT16_MAX) \
+    if (intrev16ifbe(ZIPLIST_LENGTH(zl)) < UINT16_MAX) \
         ZIPLIST_LENGTH(zl) = intrev16ifbe(intrev16ifbe(ZIPLIST_LENGTH(zl))+incr); \
 }
+
+/* Don't let ziplists grow over 1GB in any case, don't wanna risk overflow in
+ * zlbytes*/
+#define ZIPLIST_MAX_SAFETY_SIZE (1<<30)
+int ziplistSafeToAdd(unsigned char* zl, size_t add) {
+    size_t len = zl? ziplistBlobLen(zl): 0;
+    if (len + add > ZIPLIST_MAX_SAFETY_SIZE)
+        return 0;
+    return 1;
+}
+
 
 /* We use this function to receive information about a ziplist entry.
  * Note that this is not how the data is actually encoded, is just what we
  * get filled by a function in order to operate more easily. */
 typedef struct zlentry {
-    unsigned int prevrawlensize; /* Bytes used to encode the previos entry len*/
+    unsigned int prevrawlensize; /* Bytes used to encode the previous entry len*/
     unsigned int prevrawlen;     /* Previous entry len. */
     unsigned int lensize;        /* Bytes used to encode this entry type/len.
                                     For example strings have a 1, 2 or 5 bytes
@@ -431,7 +442,7 @@ unsigned int zipStorePrevEntryLength(unsigned char *p, unsigned int len) {
 /* Return the length of the previous element, and the number of bytes that
  * are used in order to encode the previous element length.
  * 'ptr' must point to the prevlen prefix of an entry (that encodes the
- * length of the previos entry in order to navigate the elements backward).
+ * length of the previous entry in order to navigate the elements backward).
  * The length of the previous entry is stored in 'prevlen', the number of
  * bytes needed to encode the previous entry length are stored in
  * 'prevlensize'. */
@@ -440,7 +451,7 @@ unsigned int zipStorePrevEntryLength(unsigned char *p, unsigned int len) {
     if ((prevlensize) == 1) {                                                  \
         (prevlen) = (ptr)[0];                                                  \
     } else if ((prevlensize) == 5) {                                           \
-        assert(sizeof((prevlensize)) == 4);                                    \
+        assert(sizeof((prevlen)) == 4);                                    \
         memcpy(&(prevlen), ((char*)(ptr)) + 1, 4);                             \
         memrev32ifbe(&prevlen);                                                \
     }                                                                          \
@@ -576,7 +587,7 @@ void zipEntry(unsigned char *p, zlentry *e) {
 
 /* Create a new empty ziplist. */
 unsigned char *ziplistNew(void) {
-    unsigned int bytes = ZIPLIST_HEADER_SIZE+1;
+    unsigned int bytes = ZIPLIST_HEADER_SIZE+ZIPLIST_END_SIZE;
     unsigned char *zl = zmalloc(bytes);
     ZIPLIST_BYTES(zl) = intrev32ifbe(bytes);
     ZIPLIST_TAIL_OFFSET(zl) = intrev32ifbe(ZIPLIST_HEADER_SIZE);
@@ -586,7 +597,8 @@ unsigned char *ziplistNew(void) {
 }
 
 /* Resize the ziplist. */
-unsigned char *ziplistResize(unsigned char *zl, unsigned int len) {
+unsigned char *ziplistResize(unsigned char *zl, size_t len) {
+    assert(len < UINT32_MAX);
     zl = zrealloc(zl,len);
     ZIPLIST_BYTES(zl) = intrev32ifbe(len);
     zl[len-1] = ZIP_END;
@@ -897,6 +909,9 @@ unsigned char *ziplistMerge(unsigned char **first, unsigned char **second) {
 
     /* Combined zl length should be limited within UINT16_MAX */
     zllength = zllength < UINT16_MAX ? zllength : UINT16_MAX;
+
+    /* larger values can't be stored into ZIPLIST_BYTES */
+    assert(zlbytes < UINT32_MAX);
 
     /* Save offset positions before we start ripping memory apart. */
     size_t first_offset = intrev32ifbe(ZIPLIST_TAIL_OFFSET(*first));
