@@ -1,0 +1,4 @@
+/usr/bin/cmake -DCMAKE_BUILD_TYPE=Debug -G "CodeBlocks - Unix Makefiles" -S /tmp/test_pipeline_redis -B /tmp/test_pipeline_redis/cmake-build-debug-41-20023
+-- Configuring done
+-- Generating done
+-- Build files have been written to: /tmp/test_pipeline_redis/cmake-build-debug-41-20023
